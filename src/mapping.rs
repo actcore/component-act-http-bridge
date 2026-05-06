@@ -1,6 +1,6 @@
 // ACT-HTTP <-> ACT WIT type conversion utilities.
 
-use crate::act::core::types::{ContentPart, LocalizedString, ToolDefinition, ToolError, ToolEvent};
+use crate::exports::act::tools::tool_provider::{ContentPart, LocalizedString, ToolDefinition, ToolEvent};
 use act_types::cbor::to_cbor;
 use act_types::http;
 use base64::Engine as _;
@@ -36,17 +36,6 @@ pub fn http_response_to_events(response: &http::ToolCallResponse) -> Vec<ToolEve
             })
         })
         .collect()
-}
-
-/// Convert an ACT-HTTP `ToolError` to a WIT `ToolError`.
-#[cfg_attr(not(test), expect(dead_code))]
-pub fn http_error_to_wit(error: &http::ToolError) -> ToolError {
-    let metadata = metadata_json_to_cbor(error.metadata.as_ref());
-    ToolError {
-        kind: error.kind.clone(),
-        message: LocalizedString::Plain(error.message.clone()),
-        metadata,
-    }
 }
 
 /// Convert content data from JSON value to bytes.
@@ -145,17 +134,5 @@ mod tests {
             }
             _ => panic!("expected content event"),
         }
-    }
-
-    #[test]
-    fn error_mapping() {
-        let http_err = http::ToolError {
-            kind: "std:not-found".to_string(),
-            message: "Tool not found".to_string(),
-            metadata: None,
-        };
-        let wit_err = http_error_to_wit(&http_err);
-        assert_eq!(wit_err.kind, "std:not-found");
-        assert!(matches!(wit_err.message, LocalizedString::Plain(ref s) if s == "Tool not found"));
     }
 }

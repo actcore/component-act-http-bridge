@@ -1,17 +1,22 @@
 use act_types::http::{
-    ErrorResponse, HEADER_PROTOCOL_VERSION, ListToolsResponse, PROTOCOL_VERSION, ToolCallRequest,
-    ToolCallResponse,
+    ErrorResponse, HEADER_PROTOCOL_VERSION, ListToolsResponse, OpenSessionRequest,
+    OpenSessionResponse, PROTOCOL_VERSION, ToolCallRequest, ToolCallResponse,
 };
 use http::Method;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-#[derive(Deserialize, JsonSchema)]
+/// Per-session upstream connection parameters. Populated from
+/// `open-session.args` and stored in the session registry — no
+/// per-call metadata parsing.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[schemars(crate = "schemars", title = "act-http-bridge open-session args")]
 pub struct Config {
     /// Base URL of the remote ACT-HTTP server (e.g. http://localhost:3000)
     pub url: String,
-    /// Optional default headers sent with every request (e.g. authorization)
+    /// Optional default headers sent with every upstream request
+    /// (e.g. `Authorization`).
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
 }
@@ -29,41 +34,12 @@ impl ActHttpError {
             message: msg.into(),
         }
     }
-
-    pub fn invalid_args(msg: impl Into<String>) -> Self {
-        Self {
-            kind: "std:invalid-args".to_string(),
-            message: msg.into(),
-        }
-    }
 }
 
 impl std::fmt::Display for ActHttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.kind, self.message)
     }
-}
-
-/// Extract Config from metadata key-value pairs.
-/// Each value is CBOR-encoded.
-pub fn parse_config_from_metadata(metadata: &[(String, Vec<u8>)]) -> Result<Config, ActHttpError> {
-    let url = metadata
-        .iter()
-        .find(|(k, _)| k == "url")
-        .map(|(_, v)| act_types::cbor::from_cbor::<String>(v))
-        .transpose()
-        .map_err(|e| ActHttpError::invalid_args(format!("Invalid url in metadata: {e}")))?
-        .ok_or_else(|| ActHttpError::invalid_args("Missing 'url' in metadata"))?;
-
-    let headers = metadata
-        .iter()
-        .find(|(k, _)| k == "headers")
-        .map(|(_, v)| act_types::cbor::from_cbor::<BTreeMap<String, String>>(v))
-        .transpose()
-        .map_err(|e| ActHttpError::invalid_args(format!("Invalid headers in metadata: {e}")))?
-        .unwrap_or_default();
-
-    Ok(Config { url, headers })
 }
 
 /// Fetch tool definitions from a remote ACT-HTTP server.
@@ -93,24 +69,68 @@ pub async fn call_tool(
         http_request_with_status(config, Method::POST, &url, &body).await?;
 
     if !(200..300).contains(&status) {
-        // Try to parse as ACT error response
-        if let Ok(err_resp) = serde_json::from_slice::<ErrorResponse>(&response_bytes) {
-            return Err(ActHttpError {
-                kind: err_resp.error.kind,
-                message: err_resp.error.message,
-            });
-        }
-        // Fallback: map HTTP status to error kind
-        let kind = status_to_error_kind(status);
-        let detail = String::from_utf8_lossy(&response_bytes);
-        return Err(ActHttpError {
-            kind: kind.to_string(),
-            message: format!("HTTP {status}: {detail}"),
-        });
+        return Err(parse_error_response(status, &response_bytes));
     }
 
     serde_json::from_slice(&response_bytes)
         .map_err(|e| ActHttpError::internal(format!("Invalid tool response: {e}")))
+}
+
+/// Open a session on a remote ACT-HTTP server. Returns the upstream
+/// session-id; the bridge issues its own outward-facing id and maps
+/// the two (NAT-style, per ACT-SESSIONS §3.2).
+///
+/// Currently unused — the bridge does not propagate sessions to the
+/// upstream. Wired up for a future change where bridge-managed sessions
+/// optionally open a paired upstream session (so cascade-close works
+/// for stateful upstream components).
+#[allow(dead_code)]
+pub async fn open_upstream_session(
+    config: &Config,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Result<OpenSessionResponse, ActHttpError> {
+    let url = format!("{}/sessions", config.url.trim_end_matches('/'));
+    let request = OpenSessionRequest {
+        arguments: serde_json::Value::Object(args.clone()),
+        metadata: None,
+    };
+    let body = serde_json::to_vec(&request)
+        .map_err(|e| ActHttpError::internal(format!("JSON serialize error: {e}")))?;
+    let (status, response_bytes) =
+        http_request_with_status(config, Method::POST, &url, &body).await?;
+
+    if !(200..300).contains(&status) {
+        return Err(parse_error_response(status, &response_bytes));
+    }
+
+    serde_json::from_slice(&response_bytes)
+        .map_err(|e| ActHttpError::internal(format!("Invalid open-session response: {e}")))
+}
+
+/// Close a session on the upstream. Best-effort — errors are
+/// swallowed, matching the WIT close-session contract.
+pub async fn close_upstream_session(config: &Config, upstream_id: &str) {
+    let url = format!(
+        "{}/sessions/{}",
+        config.url.trim_end_matches('/'),
+        upstream_id
+    );
+    let _ = http_request_with_status(config, Method::DELETE, &url, b"").await;
+}
+
+fn parse_error_response(status: u16, bytes: &[u8]) -> ActHttpError {
+    if let Ok(err_resp) = serde_json::from_slice::<ErrorResponse>(bytes) {
+        return ActHttpError {
+            kind: err_resp.error.kind,
+            message: err_resp.error.message,
+        };
+    }
+    let kind = status_to_error_kind(status);
+    let detail = String::from_utf8_lossy(bytes);
+    ActHttpError {
+        kind: kind.to_string(),
+        message: format!("HTTP {status}: {detail}"),
+    }
 }
 
 fn status_to_error_kind(status: u16) -> &'static str {
