@@ -1,6 +1,8 @@
 // ACT-HTTP <-> ACT WIT type conversion utilities.
 
-use crate::exports::act::tools::tool_provider::{ContentPart, LocalizedString, ToolDefinition, ToolEvent};
+use crate::exports::act::tools::tool_provider::{
+    ContentPart, LocalizedString, ToolDefinition, ToolEvent,
+};
 use act_types::cbor::to_cbor;
 use act_types::http;
 use base64::Engine as _;

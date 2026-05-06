@@ -77,9 +77,7 @@ fn invalid_args(msg: impl Into<String>) -> tool_exports::Error {
 fn session_not_found(session_id: &str) -> tool_exports::Error {
     tool_exports::Error {
         kind: act_types::constants::ERR_SESSION_NOT_FOUND.to_string(),
-        message: tool_exports::LocalizedString::Plain(format!(
-            "Unknown session-id: {session_id}"
-        )),
+        message: tool_exports::LocalizedString::Plain(format!("Unknown session-id: {session_id}")),
         metadata: vec![],
     }
 }
@@ -106,10 +104,12 @@ impl tool_exports::Guest for ActHttpBridge {
     ) -> Result<tool_exports::ListToolsResponse, tool_exports::Error> {
         let session_id = match extract_session_id(&metadata) {
             Some(id) => id,
-            None => return Ok(tool_exports::ListToolsResponse {
-                metadata: vec![],
-                tools: vec![],
-            }),
+            None => {
+                return Ok(tool_exports::ListToolsResponse {
+                    metadata: vec![],
+                    tools: vec![],
+                });
+            }
         };
 
         let config = match lookup_config(&session_id) {
